@@ -516,7 +516,7 @@ How confident are you (1-5)?
 
 ```
 📚 Concept Quiz - [Topic]
-─────────────────────────────
+────────────────────────────
 
 Q1: [Question text]
   A) [Option A]
@@ -531,7 +531,7 @@ Q1: [Question text]
 
 ```
 📖 Code Reading - [File]
-─────────────────────────────
+────────────────────────────
 
 Open [file_path] and answer:
 
@@ -544,7 +544,7 @@ Q: [Question about code]
 
 ```
 💻 Coding Challenge
-─────────────────────────────
+────────────────────────────
 
 Build/modify [description]
 
@@ -559,7 +559,7 @@ Expected output: [description]
 
 ```
 🎯 Teach-Back Challenge
-─────────────────────────────
+────────────────────────────
 
 Explain [topic] in your own words:
 
@@ -573,6 +573,385 @@ Cover:
 
 💡 Teaching reveals gaps in understanding
 ```
+
+---
+
+## Quiz Generation Workflow
+
+### Overview
+
+Quiz generation is **dynamic**, not pre-written. Each quiz:
+- Generated fresh based on topic complexity and micro topics
+- Saved to file for audit trail (not reused)
+- Adjusts based on previous struggles (not confidence rating)
+
+### Step 1: Analyze Topic (During Teaching)
+
+Before generating quiz, identify:
+
+```
+📚 Topic Analysis
+───────────────────────────────
+Topic: [Topic Name]
+Complexity: SIMPLE / MEDIUM / COMPLEX
+
+Micro topics (sub-concepts):
+  • [micro topic 1]
+  • [micro topic 2]
+  • [micro topic 3]
+  • [micro topic 4]
+  • [micro topic 5]
+
+Code references (if applicable):
+  • [file_path] - [purpose]
+
+Previous struggles:
+  • Weak micro topics: [from history]
+  • Failed quiz attempts: [N]
+```
+
+**Complexity Guidelines:**
+| Complexity | Indicators |
+|------------|------------|
+| SIMPLE | Single clear concept, direct equivalent to user's known tech |
+| MEDIUM | New syntax but familiar concept, multiple related ideas |
+| COMPLEX | Novel concept, foundational, multi-layered, requires mental model shift |
+
+**Micro Topic Identification:**
+Break main topic into teachable sub-concepts:
+- Each micro topic can be tested with 1 question
+- Core concepts vs. secondary details
+- Prerequisite concepts vs. advanced nuances
+
+Examples:
+| Topic | Micro Topics | Complexity |
+|-------|--------------|------------|
+| C# Syntax Basics | semicolons, braces, var inference, type declaration, statement vs block | SIMPLE |
+| Classes & Objects | class syntax, { get; set; }, methods vs properties, navigation properties, inheritance, POCO concept | MEDIUM |
+| Dependency Injection | DI concept, transient lifetime, scoped lifetime, singleton lifetime, service registration, constructor injection, captive dependency warning | COMPLEX |
+| LINQ Queries | Where clause, Select projection, Include eager load, ThenInclude nested, deferred execution, N+1 problem, FirstOrDefault vs SingleOrDefault | COMPLEX |
+
+### Step 2: Determine Quiz Parameters
+
+**Question Count by Complexity:**
+| Complexity | Questions | Reasoning |
+|------------|-----------|-----------|
+| SIMPLE | 2-3 | Few micro topics, quick verification |
+| MEDIUM | 4-5 | Multiple concepts, broader coverage |
+| COMPLEX | 5-7 | Deep topics, need comprehensive check |
+
+**Question Type Mix:**
+| Complexity | MCQ | Code Reading | Elaboration | Teach-Back | Coding |
+|------------|-----|--------------|-------------|------------|--------|
+| SIMPLE | 100% | - | - | - | - |
+| MEDIUM | 60% | 20% | 20% | - | - |
+| COMPLEX | 40% | 30% | - | 20% | 10% |
+
+**Micro Topic Coverage:**
+| Complexity | Minimum Coverage |
+|------------|------------------|
+| SIMPLE | 60% of micro topics |
+| MEDIUM | 60% of micro topics |
+| COMPLEX | 80% of micro topics |
+
+**Struggle-Based Adjustments (NOT confidence-based):**
+- If previous quiz struggles: emphasize weak micro topics
+- If previous confidence stuck: include more clarifying questions
+- If multiple failures: add simpler warm-up question
+
+### Step 3: Generate Questions
+
+For each question, generate:
+
+**Concept MCQ Format:**
+```
+Q[N] [MCQ]: [question text]
+  A) [option A]
+  B) [option B] ← CORRECT
+  C) [option C]
+  D) [option D]
+
+Micro topic: [which sub-concept this tests]
+
+Explanations (generated with question):
+  A: [why A is wrong - specific misconception]
+  B: [why B is correct]
+  C: [why C is wrong]
+  D: [why D is wrong]
+```
+
+**Code Reading Format:**
+```
+Q[N] [CODE]: Read this code and answer:
+
+[code snippet - 5-15 lines]
+
+Question: [what to analyze - behavior, output, error]
+
+Micro topic: [which concept this tests]
+Answer: [expected answer]
+Explanation: [why this behavior occurs]
+```
+
+**Elaboration Format:**
+```
+Q[N] [ELAB]: How is [X] similar to [Y]? List key differences.
+
+Micro topic: [connection being tested]
+
+Expected points:
+  • [point 1]
+  • [point 2]
+  • [point 3]
+```
+
+**Teach-Back Format:**
+```
+Q[N] [TEACH]: Explain [micro topic] in your own words.
+
+Cover:
+  • [aspect 1]
+  • [aspect 2]
+
+Evaluation criteria:
+  • Accuracy: [what must be correct]
+  • Completeness: [what must be covered]
+```
+
+**Coding Task Format:**
+```
+Q[N] [CODE-TASK]: Write code to [task description].
+
+Requirements:
+  • [requirement 1]
+  • [requirement 2]
+
+Micro topic: [what skill this tests]
+Expected solution: [reference implementation]
+```
+
+### Step 4: Present Quiz
+
+```
+📚 Quiz - [Topic Name] ([Complexity])
+────────────────────────────────────
+Questions: [N]
+Micro topics covered: [list - show coverage]
+
+Q1 [MCQ]: [question]
+   A) [option]
+   B) [option]
+   C) [option]
+   D) [option]
+
+Q2 [CODE]: [code reading question]
+[code snippet]
+Question: [prompt]
+
+[Continue for all questions]
+
+────────────────────────────────────
+Answer each question. Wrong answers receive explanations.
+```
+
+### Step 5: Evaluate Answers
+
+**For Correct Answers:**
+```
+✅ Q[N]: Correct!
+
+[No further comment, move to next]
+```
+
+**For Wrong Answers:**
+```
+❌ Q[N]: Incorrect.
+
+Correct answer: [B]
+
+Why your answer ([A]) is wrong:
+[Specific misconception explanation - 1-2 sentences]
+
+📚 Quick recap:
+[Concept reinforcement - 2-3 sentences]
+
+Example (if helpful):
+[code or analogy - 1-2 lines]
+
+Options:
+  • "clarify" - Explain this concept more
+  • "similar" - Try another question on same micro topic
+  • "continue" - Move to next question
+```
+
+**Record Struggle:**
+- Track: quiz_struggle (+1)
+- Note: which micro topic failed
+- Save: to struggles table with struggle_type='quiz_failed'
+
+### Step 6: Post-Quiz Confidence Check
+
+**If Quiz Passed AND Pre-Quiz Confidence < 4:**
+
+```
+⏸️ Post-Quiz Confidence Check
+───────────────────────────────
+Quiz passed! But your pre-quiz confidence was [X].
+
+We need confidence >= 4 before marking this topic complete.
+
+How confident are you NOW? (1-5)
+
+  1 = 🟤 "Still very confused"
+  2 = 🟠 "Parts are unclear"
+  3 = 🟡 "Understand but nervous about edge cases"
+  4 = 🟢 "Solid understanding, could explain basics"
+  5 = 🔵 "Could teach this confidently"
+```
+
+**If New Confidence >= 4:**
+```
+✅ PASSED! Confidence improved from [X] to [Y].
+
+Topic Status: COMPLETED
+Next review: [1 day] (spaced repetition start)
+
+Moving to: [next topic]
+```
+
+**If New Confidence < 4:**
+```
+⏸️ Confidence Below Threshold
+──────────────────────────────
+Your confidence is [Y]. We need at least 4.
+
+Why do you feel uncertain?
+
+[Wait for user response - understand specific concern]
+
+Based on your concern, choose:
+
+  • "re-quiz" - Different quiz on same topic
+  • "explain more" - Additional teaching on [weak area]
+  • "practice" - Hands-on coding task
+  • "revisit later" - Pause and come back tomorrow
+```
+
+**After Intervention, Re-check:**
+```
+How confident are you now? (1-5)
+
+[If >= 4]: PASSED, proceed normally
+[If < 4]: Continue intervention loop
+```
+
+### Step 7: Confidence Stuck Handling
+
+**If Confidence < 4 After 2 Attempts:**
+
+```
+⚠️ Confidence Not Improving
+───────────────────────────
+You've attempted [N] times but confidence remains below 4.
+
+Continuing to push may not be productive right now.
+
+Would you like to:
+  • "move on" - Pause this topic, go to next topic, revisit later
+  • "stay" - Keep working on this topic now
+
+Recommendation: "move on" helps avoid frustration.
+Sleep consolidation often improves understanding.
+```
+
+**If User Chooses "move on":**
+```
+📋 Topic Paused: [Topic Name]
+
+Status: PAUSED (confidence stuck)
+Scheduled: Revisit in next session
+
+Topic progress saved:
+  • Quiz passed: ✅
+  • Confidence: [X] (below threshold)
+  • Weak areas: [from user's concern]
+
+Moving to: [next topic]
+
+💡 Sleep often helps consolidate difficult concepts.
+   We'll revisit this tomorrow.
+```
+
+**If User Chooses "stay":**
+```
+Continuing with: [Topic Name]
+
+[Provide alternative teaching approach - simpler, more examples]
+```
+
+**Record Confidence Struggle:**
+- Track: confidence_stuck (+1)
+- Note: user's stated reason for uncertainty
+- Save: to struggles table with struggle_type='confidence_stuck'
+
+### Step 8: Save Quiz Record
+
+After quiz completion, save to file for audit:
+
+```
+storage/quizzes/quiz_[topic_id]_[timestamp].json
+```
+
+Format:
+```json
+{
+  "topic_id": 123,
+  "topic_name": "C# Classes & Objects",
+  "complexity": "MEDIUM",
+  "micro_topics": ["class syntax", "properties", "methods", "inheritance"],
+  "micro_topics_covered": ["class syntax", "properties", "methods"],
+  "coverage_percent": 75,
+  "pre_quiz_confidence": 3,
+  "post_quiz_confidence": 4,
+  "confidence_attempts": 1,
+  "questions": [
+    {
+      "id": 1,
+      "type": "mcq",
+      "micro_topic": "class syntax",
+      "question": "...",
+      "options": {"A": "...", "B": "...", "C": "...", "D": "..."},
+      "correct": "B",
+      "explanations": {"A": "...", "B": "...", "C": "...", "D": "..."},
+      "user_answer": "B",
+      "passed": true
+    }
+  ],
+  "quiz_passed": true,
+  "final_passed": true,
+  "status": "completed",
+  "struggles": [],
+  "generated_at": "2026-04-25T10:00:00",
+  "session_id": 5
+}
+```
+
+### Step 9: Update Topic Status
+
+| Status | Condition | Icon | Next Action |
+|--------|-----------|------|-------------|
+| NEW | Never taught | ⬜ | Teach then quiz |
+| IN_PROGRESS | Currently learning | 🔄 | Continue session |
+| COMPLETED | Quiz passed + Confidence >= 4 | ✅ | Spaced repetition schedule |
+| PAUSED | Quiz passed + Confidence stuck + user chose "move on" | ⏸️ | Revisit next session |
+| STRUGGLING | Quiz failed 2+ times OR Confidence stuck 2+ times | ❌ | Priority recovery next session |
+
+### Struggle Tracking Summary
+
+| Struggle Type | Trigger | Table Column | Threshold |
+|---------------|---------|--------------|-----------|
+| quiz_failed | Wrong answer on quiz | struggle_type='quiz_failed' | 3+ → priority |
+| confidence_stuck | Confidence < 4 after 2+ attempts | struggle_type='confidence_stuck' | 2+ → offer pause |
 
 ---
 
@@ -747,12 +1126,15 @@ Return tomorrow for spaced repetition!
 │   ├── schema.py                 # SQLite schema
 │   ├── progress_manager.py       # DB operations
 │   ├── plan_generator.py         # Dynamic plan generation
+│   ├── quiz_manager.py           # Quiz storage & micro topic analysis
 │   └── explain_analyzer.py       # Module analysis
 ├── templates/
 │   └── plan_template.json        # Semi-structure template
 └── storage/                      # Auto-created
     ├── learning.db               # SQLite database
     ├── progress_export.json      # Git-friendly export
+    ├── quizzes/                  # Quiz records for audit
+    │   └── quiz_[topic_id]_[timestamp].json
     └── cache/
         └── module_analysis.json  # Explain mode cache
 ```
@@ -776,12 +1158,15 @@ Return tomorrow for spaced repetition!
 |-------|---------|
 | repos | Track learning repos/projects |
 | learning_plans | Store generated/imported plans |
-| topics | Individual learning tasks |
+| topics | Individual learning tasks (complexity, micro_topics, status) |
 | mastery | Spaced repetition schedule |
-| struggles | Struggle tracking |
+| struggles | Struggle tracking (quiz_failed, confidence_stuck types) |
 | sessions | Learning session history |
 | quiz_history | Quiz attempts |
-| confidence_ratings | Metacognitive monitoring |
+| confidence_ratings | Pre-quiz metacognitive monitoring |
+| confidence_history | Post-quiz confidence tracking and re-checks |
+| quiz_records | Saved quiz data for audit trail |
+| topic_micro_topics | Micro topic breakdown and weakness tracking |
 | module_cache | Explain mode analysis cache |
 
 ---

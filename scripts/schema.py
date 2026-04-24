@@ -9,7 +9,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 CREATE_REPOS = """
 CREATE TABLE IF NOT EXISTS repos (
@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS topics (
     category TEXT DEFAULT 'core',
     order_index INTEGER DEFAULT 0,
     estimated_minutes INTEGER DEFAULT 15,
+    complexity TEXT DEFAULT 'MEDIUM',
+    micro_topics TEXT,
     status TEXT DEFAULT 'new',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(plan_id, task_id)
@@ -76,10 +78,14 @@ CREATE TABLE IF NOT EXISTS struggles (
     count INTEGER DEFAULT 0,
     last_failed DATE,
     reasons TEXT,
+    struggle_type TEXT DEFAULT 'quiz_failed',
+    micro_topic TEXT,
+    attempts INTEGER DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(topic_id)
 );
 CREATE INDEX IF NOT EXISTS idx_struggles_count ON struggles(count);
+CREATE INDEX IF NOT EXISTS idx_struggles_type ON struggles(struggle_type);
 """
 
 CREATE_SESSIONS = """
@@ -135,6 +141,58 @@ CREATE INDEX IF NOT EXISTS idx_module_path ON module_cache(module_path);
 CREATE INDEX IF NOT EXISTS idx_module_analyzed ON module_cache(analyzed_at);
 """
 
+CREATE_CONFIDENCE_HISTORY = """
+CREATE TABLE IF NOT EXISTS confidence_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+    confidence_pre_quiz INTEGER,
+    confidence_post_quiz INTEGER,
+    confidence_final INTEGER,
+    attempts INTEGER DEFAULT 1,
+    improved BOOLEAN DEFAULT 0,
+    reason TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_confidence_history_topic ON confidence_history(topic_id);
+CREATE INDEX IF NOT EXISTS idx_confidence_history_improved ON confidence_history(improved);
+"""
+
+CREATE_QUIZ_RECORDS = """
+CREATE TABLE IF NOT EXISTS quiz_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+    quiz_data TEXT NOT NULL,
+    complexity TEXT,
+    micro_topics TEXT,
+    micro_topics_covered TEXT,
+    coverage_percent REAL,
+    passed INTEGER DEFAULT 0,
+    confidence_pre INTEGER,
+    confidence_post INTEGER,
+    confidence_attempts INTEGER DEFAULT 0,
+    final_status TEXT DEFAULT 'in_progress',
+    generated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_quiz_records_topic ON quiz_records(topic_id);
+CREATE INDEX IF NOT EXISTS idx_quiz_records_status ON quiz_records(final_status);
+"""
+
+CREATE_TOPIC_MICRO_TOPICS = """
+CREATE TABLE IF NOT EXISTS topic_micro_topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    micro_topic TEXT NOT NULL,
+    importance INTEGER DEFAULT 1,
+    is_weak INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(topic_id, micro_topic)
+);
+CREATE INDEX IF NOT EXISTS idx_topic_micro_topic ON topic_micro_topics(topic_id);
+CREATE INDEX IF NOT EXISTS idx_weak_micro_topics ON topic_micro_topics(is_weak);
+"""
+
 CREATE_METADATA = """
 CREATE TABLE IF NOT EXISTS schema_metadata (
     version INTEGER PRIMARY KEY,
@@ -152,6 +210,9 @@ ALL_CREATE_STATEMENTS = [
     CREATE_QUIZ_HISTORY,
     CREATE_CONFIDENCE_RATINGS,
     CREATE_MODULE_CACHE,
+    CREATE_CONFIDENCE_HISTORY,
+    CREATE_QUIZ_RECORDS,
+    CREATE_TOPIC_MICRO_TOPICS,
     CREATE_METADATA,
 ]
 
@@ -236,6 +297,25 @@ def get_migrations(from_version: int, to_version: int) -> list:
     if from_version < 1:
         pass
     
+    if from_version < 2:
+        migrations.extend([
+            "ALTER TABLE struggles ADD COLUMN struggle_type TEXT DEFAULT 'quiz_failed'",
+            "ALTER TABLE struggles ADD COLUMN micro_topic TEXT",
+            "ALTER TABLE struggles ADD COLUMN attempts INTEGER DEFAULT 1",
+            "ALTER TABLE topics ADD COLUMN complexity TEXT DEFAULT 'MEDIUM'",
+            "ALTER TABLE topics ADD COLUMN micro_topics TEXT",
+            CREATE_CONFIDENCE_HISTORY,
+            CREATE_QUIZ_RECORDS,
+            CREATE_TOPIC_MICRO_TOPICS,
+            "CREATE INDEX IF NOT EXISTS idx_struggles_type ON struggles(struggle_type)",
+            "CREATE INDEX IF NOT EXISTS idx_confidence_history_topic ON confidence_history(topic_id)",
+            "CREATE INDEX IF NOT EXISTS idx_confidence_history_improved ON confidence_history(improved)",
+            "CREATE INDEX IF NOT EXISTS idx_quiz_records_topic ON quiz_records(topic_id)",
+            "CREATE INDEX IF NOT EXISTS idx_quiz_records_status ON quiz_records(final_status)",
+            "CREATE INDEX IF NOT EXISTS idx_topic_micro_topic ON topic_micro_topics(topic_id)",
+            "CREATE INDEX IF NOT EXISTS idx_weak_micro_topics ON topic_micro_topics(is_weak)",
+        ])
+    
     return migrations
 
 
@@ -297,8 +377,31 @@ if __name__ == "__main__":
     for table in tables:
         print(f"  - {table[0]}")
     
+    cursor.execute("""
+        SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%' ORDER BY name
+    """)
+    indexes = cursor.fetchall()
+    print(f"\nIndexes: {len(indexes)}")
+    for idx in indexes:
+        print(f"  - {idx[0]}")
+    
     version = get_schema_version(conn)
     print(f"\nSchema version: {version}")
     
     close_connection(conn)
     print("\nDatabase initialized successfully!")
+
+print("\nSchema Tables:")
+print("  - repos: Track learning repos/projects")
+print("  - learning_plans: Store generated/imported plans")
+print("  - topics: Individual learning tasks (with complexity, micro_topics)")
+print("  - mastery: Spaced repetition schedule")
+print("  - struggles: Struggle tracking (quiz_failed, confidence_stuck)")
+print("  - sessions: Learning session history")
+print("  - quiz_history: Quiz attempts")
+print("  - confidence_ratings: Pre-quiz metacognitive monitoring")
+print("  - confidence_history: Post-quiz confidence tracking")
+print("  - quiz_records: Saved quiz data for audit")
+print("  - topic_micro_topics: Micro topic breakdown and weakness tracking")
+print("  - module_cache: Explain mode analysis cache")
+print("  - schema_metadata: Schema version tracking")

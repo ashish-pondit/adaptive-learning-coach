@@ -57,7 +57,7 @@ class ProgressManager:
         cursor = conn.cursor()
         
         export = {
-            "version": 1,
+            "version": 2,
             "exported_at": datetime.now().isoformat(),
             "repos": [],
             "learning_plans": [],
@@ -67,6 +67,9 @@ class ProgressManager:
             "sessions": [],
             "quiz_history": [],
             "confidence_ratings": [],
+            "confidence_history": [],
+            "quiz_records": [],
+            "topic_micro_topics": [],
             "module_cache": [],
         }
         
@@ -105,6 +108,18 @@ class ProgressManager:
         cursor.execute("SELECT * FROM module_cache")
         for row in cursor.fetchall():
             export["module_cache"].append(dict(row))
+        
+        cursor.execute("SELECT * FROM confidence_history ORDER BY created_at DESC LIMIT 100")
+        for row in cursor.fetchall():
+            export["confidence_history"].append(dict(row))
+        
+        cursor.execute("SELECT * FROM quiz_records ORDER BY generated_at DESC LIMIT 100")
+        for row in cursor.fetchall():
+            export["quiz_records"].append(dict(row))
+        
+        cursor.execute("SELECT * FROM topic_micro_topics")
+        for row in cursor.fetchall():
+            export["topic_micro_topics"].append(dict(row))
         
         with open(self.export_path, 'w') as f:
             json.dump(export, f, indent=2)
@@ -406,32 +421,49 @@ class ProgressManager:
         row = cursor.fetchone()
         return dict(row) if row else None
     
-    def record_struggle(self, topic_id: int, reason: str = "quiz_failed") -> None:
+    def record_struggle(self, topic_id: int, reason: str = "quiz_failed",
+                        struggle_type: str = "quiz_failed", 
+                        micro_topic: Optional[str] = None) -> None:
         """Record a struggle event for a topic."""
         conn = self._get_conn()
         cursor = conn.cursor()
         
         cursor.execute(
-            """INSERT OR IGNORE INTO struggles (topic_id, count, last_failed, reasons)
-            VALUES (?, 0, NULL, '[]')""",
-            (topic_id,)
+            """INSERT OR IGNORE INTO struggles (topic_id, count, last_failed, reasons, struggle_type)
+            VALUES (?, 0, NULL, '[]', ?)""",
+            (topic_id, struggle_type)
         )
         
         cursor.execute(
-            """SELECT reasons FROM struggles WHERE topic_id = ?""",
+            """SELECT reasons, count FROM struggles WHERE topic_id = ?""",
             (topic_id,)
         )
-        reasons_json = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        reasons_json = result[0]
+        current_count = result[1]
         reasons = json.loads(reasons_json) if reasons_json else []
-        reasons.append({"reason": reason, "date": datetime.now().isoformat()})
+        reasons.append({
+            "reason": reason,
+            "struggle_type": struggle_type,
+            "micro_topic": micro_topic,
+            "date": datetime.now().isoformat()
+        })
         
         cursor.execute(
             """UPDATE struggles SET 
             count = count + 1, 
             last_failed = ?, 
-            reasons = ?
+            reasons = ?,
+            struggle_type = ?,
+            micro_topic = ?,
+            attempts = ?
             WHERE topic_id = ?""",
-            (datetime.now().strftime("%Y-%m-%d"), json.dumps(reasons), topic_id)
+            (datetime.now().strftime("%Y-%m-%d"), 
+             json.dumps(reasons), 
+             struggle_type,
+             micro_topic,
+             current_count + 1,
+             topic_id)
         )
         
         cursor.execute(
@@ -611,6 +643,209 @@ class ProgressManager:
         conn.commit()
         self.export_to_json()
     
+    def update_topic_status(self, topic_id: int, status: str) -> None:
+        """Update topic status (new/in_progress/completed/paused/struggling)."""
+        valid_statuses = ['new', 'in_progress', 'completed', 'paused', 'struggling']
+        if status not in valid_statuses:
+            raise ValueError(f"Invalid status: {status}. Must be one of {valid_statuses}")
+        
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "UPDATE topics SET status = ? WHERE id = ?",
+            (status, topic_id)
+        )
+        
+        conn.commit()
+        self.export_to_json()
+    
+    def record_confidence_check(self, topic_id: int, session_id: Optional[int] = None,
+                                    confidence_pre_quiz: Optional[int] = None,
+                                    confidence_post_quiz: Optional[int] = None,
+                                    confidence_final: Optional[int] = None,
+                                    improved: bool = False,
+                                    reason: Optional[str] = None,
+                                    attempts: int = 1) -> int:
+        """Record confidence check for post-quiz confidence loop."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """INSERT INTO confidence_history 
+            (topic_id, session_id, confidence_pre_quiz, confidence_post_quiz, 
+             confidence_final, attempts, improved, reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (topic_id, session_id, confidence_pre_quiz, confidence_post_quiz,
+             confidence_final, attempts, int(improved), reason)
+        )
+        
+        record_id = cursor.lastrowid
+        conn.commit()
+        self.export_to_json()
+        return record_id
+    
+    def get_confidence_history(self, topic_id: int) -> List[Dict]:
+        """Get confidence check history for a topic."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """SELECT * FROM confidence_history 
+            WHERE topic_id = ? ORDER BY created_at DESC""",
+            (topic_id,)
+        )
+        
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def needs_post_quiz_confidence_check(self, topic_id: int, confidence_pre_quiz: int) -> bool:
+        """Check if post-quiz confidence check is needed (pre-quiz < 4)."""
+        return confidence_pre_quiz < 4
+    
+    def get_confidence_stuck_topics(self, plan_id: Optional[int] = None) -> List[Dict]:
+        """Get topics where confidence hasn't improved after attempts."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        if plan_id:
+            cursor.execute(
+                """SELECT ch.*, t.task_id, t.title, t.status
+                FROM confidence_history ch
+                JOIN topics t ON ch.topic_id = t.id
+                WHERE t.plan_id = ? AND ch.improved = 0
+                ORDER BY ch.created_at DESC""",
+                (plan_id,)
+            )
+        else:
+            cursor.execute(
+                """SELECT ch.*, t.task_id, t.title, t.status
+                FROM confidence_history ch
+                JOIN topics t ON ch.topic_id = t.id
+                WHERE ch.improved = 0
+                ORDER BY ch.created_at DESC"""
+            )
+        
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def set_topic_micro_topics(self, topic_id: int, micro_topics: List[str],
+                                   complexity: str = "MEDIUM") -> None:
+        """Set micro topics and complexity for a topic."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "UPDATE topics SET micro_topics = ?, complexity = ? WHERE id = ?",
+            (json.dumps(micro_topics), complexity, topic_id)
+        )
+        
+        cursor.execute(
+            "DELETE FROM topic_micro_topics WHERE topic_id = ?", (topic_id,)
+        )
+        
+        for micro_topic in micro_topics:
+            cursor.execute(
+                """INSERT INTO topic_micro_topics (topic_id, micro_topic, importance, is_weak)
+                VALUES (?, ?, 1, 0)""",
+                (topic_id, micro_topic)
+            )
+        
+        conn.commit()
+        self.export_to_json()
+    
+    def mark_micro_topic_weak(self, topic_id: int, micro_topic: str) -> None:
+        """Mark a micro topic as weak for a topic."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """UPDATE topic_micro_topics 
+            SET is_weak = 1 
+            WHERE topic_id = ? AND micro_topic = ?""",
+            (topic_id, micro_topic)
+        )
+        
+        conn.commit()
+        self.export_to_json()
+    
+    def get_weak_micro_topics(self, topic_id: int) -> List[str]:
+        """Get weak micro topics for a topic."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """SELECT micro_topic FROM topic_micro_topics 
+            WHERE topic_id = ? AND is_weak = 1""",
+            (topic_id,)
+        )
+        
+        return [row[0] for row in cursor.fetchall()]
+    
+    def get_topic_complexity(self, topic_id: int) -> str:
+        """Get complexity level for a topic."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT complexity FROM topics WHERE id = ?",
+            (topic_id,)
+        )
+        result = cursor.fetchone()
+        return result[0] if result else "MEDIUM"
+    
+    def get_topic_micro_topics_list(self, topic_id: int) -> List[str]:
+        """Get micro topics list for a topic."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT micro_topics FROM topics WHERE id = ?",
+            (topic_id,)
+        )
+        result = cursor.fetchone()
+        if result and result[0]:
+            return json.loads(result[0])
+        return []
+    
+    def get_struggle_type_counts(self, topic_id: int) -> Dict[str, int]:
+        """Get counts by struggle type for a topic."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """SELECT struggle_type, COUNT(*) as count
+            FROM struggles WHERE topic_id = ?
+            GROUP BY struggle_type""",
+            (topic_id,)
+        )
+        
+        counts = {"quiz_failed": 0, "confidence_stuck": 0}
+        for row in cursor.fetchall():
+            counts[row["struggle_type"]] = row["count"]
+        
+        return counts
+    
+    def get_paused_topics(self, plan_id: Optional[int] = None) -> List[Dict]:
+        """Get paused topics (confidence stuck, user chose to move on)."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        if plan_id:
+            cursor.execute(
+                """SELECT * FROM topics WHERE plan_id = ? AND status = 'paused'
+                ORDER BY created_at""",
+                (plan_id,)
+            )
+        else:
+            cursor.execute(
+                """SELECT * FROM topics WHERE status = 'paused' ORDER BY created_at"""
+            )
+        
+        return [dict(row) for row in cursor.fetchall()]
+    
     def get_progress_summary(self, plan_id: int) -> Dict:
         """Generate progress summary for a plan."""
         conn = self._get_conn()
@@ -634,6 +869,20 @@ class ProgressManager:
             (plan_id,)
         )
         struggling_count = cursor.fetchone()["count"]
+        
+        cursor.execute(
+            "SELECT COUNT(*) as count FROM topics WHERE plan_id = ? AND status = 'paused'",
+            (plan_id,)
+        )
+        paused_count = cursor.fetchone()["count"]
+        
+        cursor.execute(
+            """SELECT COUNT(*) as count FROM struggles s
+            JOIN topics t ON s.topic_id = t.id
+            WHERE t.plan_id = ? AND s.struggle_type = 'confidence_stuck'""",
+            (plan_id,)
+        )
+        confidence_stuck_count = cursor.fetchone()["count"]
         
         cursor.execute(
             """SELECT COUNT(*) as count FROM mastery m
@@ -674,6 +923,8 @@ class ProgressManager:
             "completed_count": completed_count,
             "completion_percent": round(completed_count / total_topics * 100, 1) if total_topics > 0 else 0,
             "struggling_count": struggling_count,
+            "paused_count": paused_count,
+            "confidence_stuck_count": confidence_stuck_count,
             "due_reviews": due_reviews,
             "avg_mastery_strength": round(avg_strength, 2),
             "confidence_gaps": confidence_gaps,
