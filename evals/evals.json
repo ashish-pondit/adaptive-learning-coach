@@ -1,0 +1,335 @@
+{
+  "skill_name": "adaptive-learning-coach",
+  "evals": [
+    {
+      "id": 1,
+      "name": "start-learning-session",
+      "prompt": "I want to start learning from the comprehensive learning plan. Give me a task.",
+      "expected_output": "Should initialize progress, show summary with emojis (📊, 🔥, etc), and present first task (Task 1.1) with 📝 emoji, reference files, and instructions",
+      "files": [],
+      "assertions": [
+        {
+          "name": "shows_progress_summary",
+          "description": "Output contains progress summary with 📊 emoji",
+          "type": "contains_emoji",
+          "value": "📊"
+        },
+        {
+          "name": "presents_first_task",
+          "description": "Presents Task 1.1 or similar first task",
+          "type": "contains",
+          "value": "Task"
+        },
+        {
+          "name": "shows_reference_files",
+          "description": "Shows reference file paths from learning plan",
+          "type": "contains",
+          "value": "Reference"
+        },
+        {
+          "name": "mentions_meta_learning",
+          "description": "References meta-learning techniques (retrieval, spaced repetition, etc)",
+          "type": "any_contains",
+          "values": ["retrieval", "spaced", "interleaving", "metacognitive"]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "continue-after-reading",
+      "prompt": "I've read the Program.cs file. I'm done with this task.",
+      "expected_output": "Should proceed to metacognitive confidence check (⏸️) and then quiz/verification with appropriate emojis",
+      "files": [],
+      "assertions": [
+        {
+          "name": "confidence_check",
+          "description": "Shows confidence rating prompt with ⏸️ emoji",
+          "type": "contains_emoji",
+          "value": "⏸️"
+        },
+        {
+          "name": "rating_scale",
+          "description": "Shows 1-5 rating scale with descriptions",
+          "type": "contains",
+          "value": "1-5"
+        },
+        {
+          "name": "illusion_warning",
+          "description": "Warns about illusion of competence",
+          "type": "contains",
+          "value": "illusion"
+        },
+        {
+          "name": "quiz_or_verification",
+          "description": "Proceeds to quiz/verification phase",
+          "type": "any_contains_emoji",
+          "values": ["📚", "📖", "💻", "🔗", "🎯"]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "report-struggle",
+      "prompt": "I'm struggling with understanding the middleware pipeline. It's confusing.",
+      "expected_output": "Should mark as struggle (❌), provide deeper explanation, offer elaboration questions (🔗), and acknowledge desirable difficulty",
+      "files": [],
+      "assertions": [
+        {
+          "name": "struggle_acknowledged",
+          "description": "Shows ❌ emoji acknowledging struggle",
+          "type": "contains_emoji",
+          "value": "❌"
+        },
+        {
+          "name": "desirable_difficulty",
+          "description": "Mentions desirable difficulty concept",
+          "type": "contains",
+          "value": "desirable difficulty"
+        },
+        {
+          "name": "elaboration_offered",
+          "description": "Offers elaboration/connection questions with 🔗 emoji",
+          "type": "contains_emoji",
+          "value": "🔗"
+        },
+        {
+          "name": "explanation_provided",
+          "description": "Provides deeper explanation of middleware",
+          "type": "contains",
+          "value": "middleware"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "ask-progress",
+      "prompt": "What's my learning progress so far?",
+      "expected_output": "Should show full progress summary (📊) with stats, mastery schedule (🔄), streak info (🔥), and scheduled reviews",
+      "files": [],
+      "assertions": [
+        {
+          "name": "progress_summary",
+          "description": "Shows 📊 progress summary",
+          "type": "contains_emoji",
+          "value": "📊"
+        },
+        {
+          "name": "shows_streak",
+          "description": "Shows streak info with 🔥 emoji",
+          "type": "contains_emoji",
+          "value": "🔥"
+        },
+        {
+          "name": "mastery_schedule",
+          "description": "Shows mastery or spaced repetition info",
+          "type": "any_contains",
+          "values": ["mastery", "schedule", "review", "spaced"]
+        },
+        {
+          "name": "session_stats",
+          "description": "Shows session count or total time",
+          "type": "any_contains",
+          "values": ["session", "minute", "Session"]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "request-elaboration",
+      "prompt": "Give me some elaboration questions about dependency injection.",
+      "expected_output": "Should provide 🔗 elaboration questions connecting DI to Django/previous knowledge, with 'why' and 'how does this relate' questions",
+      "files": [],
+      "assertions": [
+        {
+          "name": "elaboration_header",
+          "description": "Shows 🔗 Elaboration header",
+          "type": "contains_emoji",
+          "value": "🔗"
+        },
+        {
+          "name": "connection_questions",
+          "description": "Asks connection questions (relate, compare, Django)",
+          "type": "any_contains",
+          "values": ["relate", "compare", "Django", "similar", "different"]
+        },
+        {
+          "name": "why_questions",
+          "description": "Asks 'why' questions to deepen understanding",
+          "type": "contains",
+          "value": "Why"
+        },
+        {
+          "name": "explains_benefit",
+          "description": "Explains benefit of elaboration for understanding",
+          "type": "contains",
+          "value": "connecting"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "teach-back-request",
+      "prompt": "I want to do a teach-back for LINQ queries to solidify my understanding.",
+      "expected_output": "Should provide 🎯 teach-back challenge asking user to explain LINQ in own words, cover key points, and mention teaching reveals gaps",
+      "files": [],
+      "assertions": [
+        {
+          "name": "teach_back_header",
+          "description": "Shows 🎯 Teach-Back header",
+          "type": "contains_emoji",
+          "value": "🎯"
+        },
+        {
+          "name": "explain_in_own_words",
+          "description": "Asks user to explain in own words",
+          "type": "contains",
+          "value": "own words"
+        },
+        {
+          "name": "teaching_benefits",
+          "description": "Mentions that teaching reveals gaps or solidifies understanding",
+          "type": "any_contains",
+          "values": ["gap", "solidify", "organize", "simplify"]
+        },
+        {
+          "name": "key_points_list",
+          "description": "Lists key points to cover",
+          "type": "contains",
+          "value": "Cover"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "name": "quiz-answer-correct",
+      "prompt": "My answer to the middleware quiz: The correct order is UseExceptionHandler → UseAuthentication → UseAuthorization because each middleware can short-circuit the pipeline, and we want to catch auth errors gracefully.",
+      "expected_output": "Should mark as passed (✅), update mastery, acknowledge correct reasoning, and potentially show celebration for correct after struggle",
+      "files": [],
+      "assertions": [
+        {
+          "name": "passed_acknowledged",
+          "description": "Shows ✅ emoji for passed",
+          "type": "contains_emoji",
+          "value": "✅"
+        },
+        {
+          "name": "mastery_updated",
+          "description": "Mentions mastery schedule update or next review",
+          "type": "any_contains",
+          "values": ["mastery", "review", "schedule", "strength"]
+        },
+        {
+          "name": "correct_feedback",
+          "description": "Provides positive feedback for correct answer",
+          "type": "any_contains",
+          "values": ["Correct", "correct", "Great", "great", "Well done"]
+        },
+        {
+          "name": "next_step",
+          "description": "Suggests next task or review",
+          "type": "any_contains",
+          "values": ["next", "Next", "continue", "Continue"]
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "name": "confidence-rating-before-quiz",
+      "prompt": "I rate my confidence as 4 - I understand well and could explain middleware pipeline to someone else.",
+      "expected_output": "Should save rating, proceed to quiz, and warn about illusion of competence if rating is high (≥4)",
+      "files": [],
+      "assertions": [
+        {
+          "name": "rating_saved",
+          "description": "Acknowledges the rating value",
+          "type": "any_contains",
+          "values": ["4", "rating", "Rating", "confidence"]
+        },
+        {
+          "name": "illusion_warning",
+          "description": "Shows ⚠️ warning about illusion of competence for high ratings",
+          "type": "contains_emoji",
+          "value": "⚠️"
+        },
+        {
+          "name": "proceeds_to_quiz",
+          "description": "Proceeds to quiz/verification",
+          "type": "any_contains_emoji",
+          "values": ["📚", "📖", "💻"]
+        },
+        {
+          "name": "metacognitive_note",
+          "description": "References metacognitive monitoring concept",
+          "type": "any_contains",
+          "values": ["metacognitive", "honest", "self-assessment", "familiarity"]
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "name": "request-interleaved-session",
+      "prompt": "I want an interleaved session mixing different topics.",
+      "expected_output": "Should show 🎲 interleaved session with mix of current + previous + random topics, explain interleaving benefits",
+      "files": [],
+      "assertions": [
+        {
+          "name": "interleaved_header",
+          "description": "Shows 🎲 for interleaved session",
+          "type": "contains_emoji",
+          "value": "🎲"
+        },
+        {
+          "name": "mixed_topics",
+          "description": "Shows mix of different topics",
+          "type": "contains",
+          "value": "mix"
+        },
+        {
+          "name": "interleaving_benefit",
+          "description": "Explains interleaving benefits (flexibility, discrimination)",
+          "type": "any_contains",
+          "values": ["flexibility", "discrimination", "harder", "stronger"]
+        },
+        {
+          "name": "current_plus_review",
+          "description": "Includes both current task and review/previous topic",
+          "type": "any_contains_emoji",
+          "values": ["📝", "🔄", "🎲"]
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "name": "check-spaced-repetition",
+      "prompt": "What's my spaced repetition schedule?",
+      "expected_output": "Should show 🔄 mastery schedule with tasks, intervals, next review dates, and strength levels",
+      "files": [],
+      "assertions": [
+        {
+          "name": "spaced_header",
+          "description": "Shows 🔄 for spaced repetition",
+          "type": "contains_emoji",
+          "value": "🔄"
+        },
+        {
+          "name": "shows_intervals",
+          "description": "Shows interval days (1, 3, 7, 14, etc)",
+          "type": "any_contains",
+          "values": ["day", "interval", "Interval", "review"]
+        },
+        {
+          "name": "shows_tasks",
+          "description": "Lists tasks in schedule",
+          "type": "any_contains",
+          "values": ["Task", "task"]
+        },
+        {
+          "name": "strength_levels",
+          "description": "Shows strength levels",
+          "type": "any_contains",
+          "values": ["strength", "Strength", "mastery"]
+        }
+      ]
+    }
+  ]
+}
