@@ -2,3 +2,15 @@
 .agents/
 AGENTS.md
 skills-lock.json
+
+# Storage (database, exports, cache)
+storage/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/

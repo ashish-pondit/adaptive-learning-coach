@@ -1,422 +1,837 @@
 """
 Progress Manager for Adaptive Learning Coach
-Utility functions for managing LEARNING_PROGRESS.json
+SQLite-based progress tracking with JSON export for git-friendly snapshots.
 """
 
 import json
+import sqlite3
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
-DEFAULT_PROGRESS = {
-    "version": 1,
-    "currentTrack": "backend",
-    "currentLevel": 0,
-    "currentPhase": 1,
-    "currentTaskId": None,
-    "completedTasks": [],
-    "taughtTasks": [],
-    "strugglingTasks": {},
-    "masterySchedule": {},
-    "confidenceRatings": {},
-    "quizHistory": [],
-    "attemptLog": {},
-    "currentTeachingSession": None,
-    "lastSessionDate": None,
-    "sessionCount": 0,
-    "totalMinutesLearned": 0,
-    "consecutiveDays": 0,
-    "lastSessionDuration": 0,
-    "settings": {
-        "sessionTargetMinutes": 30,
-        "interleaveRatio": 0.25,
-        "showHintsAfterAttempts": 2,
-        "teachingDepth": "auto"
-    }
-}
-
-SPACED_REPETITION_INTERVALS = [1, 3, 7, 14, 30, 60, 120]
+try:
+    from .schema import (
+        get_connection,
+        close_connection,
+        get_db_path,
+        get_export_path,
+        SPACED_REPETITION_INTERVALS,
+    )
+except ImportError:
+    from schema import (
+        get_connection,
+        close_connection,
+        get_db_path,
+        get_export_path,
+        SPACED_REPETITION_INTERVALS,
+    )
 
 
-def get_progress_path() -> Path:
-    """Get path to LEARNING_PROGRESS.json"""
-    return Path("docs/LEARNING_PROGRESS.json")
-
-
-def load_progress() -> dict:
-    """Load progress file, create if missing"""
-    path = get_progress_path()
+class ProgressManager:
+    """Manages learning progress using SQLite database."""
     
-    if not path.exists():
-        save_progress(DEFAULT_PROGRESS)
-        return DEFAULT_PROGRESS.copy()
+    def __init__(self, skill_dir: Optional[Path] = None):
+        self.skill_dir = skill_dir or Path(__file__).parent.parent
+        self.db_path = get_db_path(self.skill_dir)
+        self.export_path = get_export_path(self.skill_dir)
+        self._conn = None
     
-    with open(path, 'r') as f:
-        data = json.load(f)
-        if "taughtTasks" not in data:
-            data["taughtTasks"] = []
-        if "currentTeachingSession" not in data:
-            data["currentTeachingSession"] = None
-        return data
-
-
-def save_progress(progress: dict) -> None:
-    """Save progress file"""
-    path = get_progress_path()
+    def _get_conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = get_connection(self.db_path)
+        return self._conn
     
-    path.parent.mkdir(parents=True, exist_ok=True)
+    def _close(self) -> None:
+        if self._conn:
+            close_connection(self._conn)
+            self._conn = None
     
-    with open(path, 'w') as f:
-        json.dump(progress, f, indent=2)
-
-
-def is_new_task(progress: dict, task_id: str) -> bool:
-    """Check if task is NEW (never completed, not in mastery schedule)"""
-    return task_id not in progress.get("completedTasks", []) and \
-           task_id not in progress.get("masterySchedule", {})
-
-
-def is_review_task(progress: dict, task_id: str) -> bool:
-    """Check if task is REVIEW (already completed, due for spaced repetition)"""
-    return task_id in progress.get("completedTasks", [])
-
-
-def is_struggling_task(progress: dict, task_id: str) -> bool:
-    """Check if task is STRUGGLING (marked as struggling, needs recovery)"""
-    struggles = progress.get("strugglingTasks", {})
-    return task_id in struggles and struggles[task_id].get("count", 0) >= 2
-
-
-def get_task_type(progress: dict, task_id: str) -> str:
-    """Determine task type: 'new', 'review', or 'struggling'"""
-    if is_struggling_task(progress, task_id):
-        return "struggling"
-    elif is_review_task(progress, task_id):
-        return "review"
-    else:
-        return "new"
-
-
-def mark_task_taught(progress: dict, task_id: str) -> dict:
-    """Mark task as having received teaching (may not be complete)"""
-    taught = progress.get("taughtTasks", [])
-    if task_id not in taught:
-        taught.append(task_id)
-    progress["taughtTasks"] = taught
-    return progress
-
-
-def start_teaching_session(progress: dict, task_id: str) -> dict:
-    """Start a teaching session for a task"""
-    progress["currentTeachingSession"] = {
-        "taskId": task_id,
-        "phase": "teaching",
-        "started": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    progress["currentTaskId"] = task_id
-    return progress
-
-
-def update_teaching_phase(progress: dict, phase: str) -> dict:
-    """Update current teaching session phase: 'teaching', 'qa', 'quiz'"""
-    if progress.get("currentTeachingSession"):
-        progress["currentTeachingSession"]["phase"] = phase
-    return progress
-
-
-def end_teaching_session(progress: dict) -> dict:
-    """End current teaching session"""
-    if progress.get("currentTeachingSession"):
-        task_id = progress["currentTeachingSession"]["taskId"]
-        mark_task_taught(progress, task_id)
-        progress["currentTeachingSession"] = None
-    return progress
-
-
-def get_teaching_session_status(progress: dict) -> Optional[dict]:
-    """Get current teaching session status"""
-    return progress.get("currentTeachingSession")
-
-
-def update_session_start(progress: dict) -> dict:
-    """Update progress at session start"""
-    today = datetime.now().strftime("%Y-%m-%d")
+    def _row_to_dict(self, row: sqlite3.Row, columns: List[str]) -> Dict:
+        return {col: row[i] for i, col in enumerate(columns)}
     
-    if progress["lastSessionDate"]:
-        last = datetime.strptime(progress["lastSessionDate"], "%Y-%m-%d")
-        now = datetime.strptime(today, "%Y-%m-%d")
-        days_diff = (now - last).days
+    def export_to_json(self) -> Dict:
+        """Export database to JSON for git-friendly snapshot."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
         
-        if days_diff == 1:
-            progress["consecutiveDays"] += 1
-        elif days_diff > 1:
-            progress["consecutiveDays"] = 1
-    else:
-        progress["consecutiveDays"] = 1
-    
-    progress["lastSessionDate"] = today
-    progress["sessionCount"] += 1
-    
-    return progress
-
-
-def mark_task_completed(progress: dict, task_id: str) -> dict:
-    """Mark task as completed (passed quiz)"""
-    if task_id not in progress.get("completedTasks", []):
-        progress["completedTasks"].append(task_id)
-    
-    if task_id in progress.get("strugglingTasks", {}):
-        del progress["strugglingTasks"][task_id]
-    
-    return progress
-
-
-def mark_task_struggling(progress: dict, task_id: str, reason: str = "quiz_failed") -> dict:
-    """Mark task as struggling"""
-    if task_id not in progress.get("strugglingTasks", {}):
-        progress["strugglingTasks"][task_id] = {
-            "count": 0,
-            "lastFailed": None,
-            "reasons": []
+        export = {
+            "version": 1,
+            "exported_at": datetime.now().isoformat(),
+            "repos": [],
+            "learning_plans": [],
+            "topics": [],
+            "mastery": [],
+            "struggles": [],
+            "sessions": [],
+            "quiz_history": [],
+            "confidence_ratings": [],
+            "module_cache": [],
         }
-    
-    progress["strugglingTasks"][task_id]["count"] += 1
-    progress["strugglingTasks"][task_id]["lastFailed"] = datetime.now().strftime("%Y-%m-%d")
-    progress["strugglingTasks"][task_id]["reasons"].append(reason)
-    
-    return progress
-
-
-def clear_task_struggle(progress: dict, task_id: str) -> dict:
-    """Clear struggle status for task"""
-    if task_id in progress.get("strugglingTasks", {}):
-        del progress["strugglingTasks"][task_id]
-    
-    return progress
-
-
-def get_struggle_count(progress: dict, task_id: str) -> int:
-    """Get struggle count for a task"""
-    struggles = progress.get("strugglingTasks", {})
-    if task_id in struggles:
-        return struggles[task_id].get("count", 0)
-    return 0
-
-
-def update_mastery_schedule(progress: dict, task_id: str, passed: bool, confidence: int) -> dict:
-    """Update spaced repetition mastery schedule"""
-    today = datetime.now()
-    today_str = today.strftime("%Y-%m-%d")
-    
-    if task_id not in progress.get("masterySchedule", {}):
-        progress["masterySchedule"][task_id] = {
-            "strength": 0.0,
-            "nextReview": today_str,
-            "interval": 0
-        }
-    
-    mastery = progress["masterySchedule"][task_id]
-    
-    if passed and confidence >= 3:
-        mastery["strength"] = min(1.0, mastery["strength"] + 0.15)
         
-        current_interval = mastery["interval"]
-        if current_interval in SPACED_REPETITION_INTERVALS:
-            idx = SPACED_REPETITION_INTERVALS.index(current_interval)
-            next_idx = min(idx + 1, len(SPACED_REPETITION_INTERVALS) - 1)
-            mastery["interval"] = SPACED_REPETITION_INTERVALS[next_idx]
+        cursor.execute("SELECT * FROM repos")
+        for row in cursor.fetchall():
+            export["repos"].append(dict(row))
+        
+        cursor.execute("SELECT * FROM learning_plans")
+        for row in cursor.fetchall():
+            export["learning_plans"].append(dict(row))
+        
+        cursor.execute("SELECT * FROM topics")
+        for row in cursor.fetchall():
+            export["topics"].append(dict(row))
+        
+        cursor.execute("SELECT * FROM mastery")
+        for row in cursor.fetchall():
+            export["mastery"].append(dict(row))
+        
+        cursor.execute("SELECT * FROM struggles")
+        for row in cursor.fetchall():
+            export["struggles"].append(dict(row))
+        
+        cursor.execute("SELECT * FROM sessions ORDER BY started_at DESC LIMIT 50")
+        for row in cursor.fetchall():
+            export["sessions"].append(dict(row))
+        
+        cursor.execute("SELECT * FROM quiz_history ORDER BY date DESC LIMIT 100")
+        for row in cursor.fetchall():
+            export["quiz_history"].append(dict(row))
+        
+        cursor.execute("SELECT * FROM confidence_ratings ORDER BY date DESC LIMIT 100")
+        for row in cursor.fetchall():
+            export["confidence_ratings"].append(dict(row))
+        
+        cursor.execute("SELECT * FROM module_cache")
+        for row in cursor.fetchall():
+            export["module_cache"].append(dict(row))
+        
+        with open(self.export_path, 'w') as f:
+            json.dump(export, f, indent=2)
+        
+        return export
+    
+    def import_from_json(self, json_path: Optional[Path] = None) -> bool:
+        """Import from JSON export (backward compatibility)."""
+        if json_path is None:
+            json_path = self.export_path
+        
+        if not json_path.exists():
+            return False
+        
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        if "repos" in data:
+            for repo in data["repos"]:
+                cursor.execute(
+                    """INSERT OR IGNORE INTO repos 
+                    (id, path, name, context, primary_language, created_at, last_accessed)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        repo.get("id"),
+                        repo.get("path"),
+                        repo.get("name"),
+                        repo.get("context", "existing"),
+                        repo.get("primary_language"),
+                        repo.get("created_at"),
+                        repo.get("last_accessed"),
+                    )
+                )
+        
+        if "learning_plans" in data:
+            for plan in data["learning_plans"]:
+                cursor.execute(
+                    """INSERT OR IGNORE INTO learning_plans
+                    (id, repo_id, name, plan_type, source, experience_level, timeline, goals, created_at, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        plan.get("id"),
+                        plan.get("repo_id"),
+                        plan.get("name"),
+                        plan.get("plan_type"),
+                        plan.get("source", "generated"),
+                        plan.get("experience_level", "intermediate"),
+                        plan.get("timeline"),
+                        plan.get("goals"),
+                        plan.get("created_at"),
+                        plan.get("is_active", 1),
+                    )
+                )
+        
+        conn.commit()
+        return True
+    
+    def register_repo(self, path: str, name: str, context: str = "existing", 
+                      primary_language: Optional[str] = None) -> int:
+        """Register a repo/project for learning tracking."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """INSERT OR REPLACE INTO repos 
+            (path, name, context, primary_language, last_accessed)
+            VALUES (?, ?, ?, ?, ?)""",
+            (path, name, context, primary_language, datetime.now().isoformat())
+        )
+        
+        cursor.execute("SELECT id FROM repos WHERE path = ?", (path,))
+        repo_id = cursor.fetchone()[0]
+        conn.commit()
+        self.export_to_json()
+        return repo_id
+    
+    def get_repo(self, path: str) -> Optional[Dict]:
+        """Get repo by path."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM repos WHERE path = ?", (path,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def get_active_repo(self) -> Optional[Dict]:
+        """Get most recently accessed repo."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM repos ORDER BY last_accessed DESC LIMIT 1")
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def update_repo_access(self, repo_id: int) -> None:
+        """Update repo last_accessed timestamp."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "UPDATE repos SET last_accessed = ? WHERE id = ?",
+            (datetime.now().isoformat(), repo_id)
+        )
+        conn.commit()
+    
+    def create_learning_plan(self, repo_id: int, name: str, plan_type: str,
+                             source: str = "generated", experience_level: str = "intermediate",
+                             timeline: Optional[str] = None, goals: Optional[List[str]] = None) -> int:
+        """Create a new learning plan for a repo."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute("UPDATE learning_plans SET is_active = 0 WHERE repo_id = ?", (repo_id,))
+        
+        goals_json = json.dumps(goals) if goals else None
+        
+        cursor.execute(
+            """INSERT INTO learning_plans
+            (repo_id, name, plan_type, source, experience_level, timeline, goals, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)""",
+            (repo_id, name, plan_type, source, experience_level, timeline, goals_json)
+        )
+        
+        plan_id = cursor.lastrowid
+        conn.commit()
+        self.export_to_json()
+        return plan_id
+    
+    def get_active_plan(self, repo_id: int) -> Optional[Dict]:
+        """Get active learning plan for a repo."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT * FROM learning_plans WHERE repo_id = ? AND is_active = 1",
+            (repo_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def add_topic(self, plan_id: int, task_id: str, title: str, description: Optional[str] = None,
+                  category: str = "core", order_index: int = 0, estimated_minutes: int = 15) -> int:
+        """Add a topic/task to a learning plan."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """INSERT INTO topics
+            (plan_id, task_id, title, description, category, order_index, estimated_minutes, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'new')""",
+            (plan_id, task_id, title, description, category, order_index, estimated_minutes)
+        )
+        
+        topic_id = cursor.lastrowid
+        conn.commit()
+        self.export_to_json()
+        return topic_id
+    
+    def get_topic(self, plan_id: int, task_id: str) -> Optional[Dict]:
+        """Get topic by plan_id and task_id."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT * FROM topics WHERE plan_id = ? AND task_id = ?",
+            (plan_id, task_id)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def get_topics_by_plan(self, plan_id: int, status: Optional[str] = None) -> List[Dict]:
+        """Get all topics for a plan, optionally filtered by status."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        if status:
+            cursor.execute(
+                "SELECT * FROM topics WHERE plan_id = ? AND status = ? ORDER BY order_index",
+                (plan_id, status)
+            )
         else:
-            mastery["interval"] = SPACED_REPETITION_INTERVALS[0]
+            cursor.execute(
+                "SELECT * FROM topics WHERE plan_id = ? ORDER BY order_index",
+                (plan_id,)
+            )
         
-        next_review = today + timedelta(days=mastery["interval"])
-        mastery["nextReview"] = next_review.strftime("%Y-%m-%d")
+        return [dict(row) for row in cursor.fetchall()]
     
-    elif not passed:
-        mastery["strength"] = max(0.0, mastery["strength"] - 0.2)
-        mastery["interval"] = 1
-        mastery["nextReview"] = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+    def update_topic_status(self, topic_id: int, status: str) -> None:
+        """Update topic status: new, in_progress, completed, struggling."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "UPDATE topics SET status = ? WHERE id = ?",
+            (status, topic_id)
+        )
+        conn.commit()
+        self.export_to_json()
     
-    return progress
+    def get_next_topic(self, plan_id: int) -> Optional[Dict]:
+        """Get next topic to work on based on priority algorithm."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """SELECT t.id, t.plan_id, t.task_id, t.title, t.status,
+                      s.count as struggle_count
+               FROM topics t
+               LEFT JOIN struggles s ON t.id = s.topic_id
+               WHERE t.plan_id = ? AND t.status IN ('new', 'in_progress', 'struggling')
+               ORDER BY 
+                 CASE WHEN s.count >= 3 THEN 0 ELSE 1 END,
+                 CASE WHEN t.status = 'struggling' THEN 0 ELSE 1 END,
+                 CASE WHEN t.status = 'in_progress' THEN 0 ELSE 1 END,
+                 t.order_index
+               LIMIT 1""",
+            (plan_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def get_due_reviews(self, plan_id: int) -> List[Dict]:
+        """Get topics due for spaced repetition review."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        cursor.execute(
+            """SELECT t.id, t.plan_id, t.task_id, t.title, 
+                      m.strength, m.next_review, m.interval
+               FROM topics t
+               JOIN mastery m ON t.id = m.topic_id
+               WHERE t.plan_id = ? AND t.status = 'completed' 
+                     AND m.next_review <= ?
+               ORDER BY m.next_review ASC""",
+            (plan_id, today)
+        )
+        
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_high_struggle_topics(self, plan_id: int, min_count: int = 3) -> List[Dict]:
+        """Get topics with high struggle count."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """SELECT t.id, t.plan_id, t.task_id, t.title, s.count, s.last_failed, s.reasons
+               FROM topics t
+               JOIN struggles s ON t.id = s.topic_id
+               WHERE t.plan_id = ? AND s.count >= ?
+               ORDER BY s.count DESC""",
+            (plan_id, min_count)
+        )
+        
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_interleaved_topic(self, plan_id: int, current_task_id: str) -> Optional[Dict]:
+        """Select an interleaved topic (random previous with weak mastery)."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """SELECT t.id, t.plan_id, t.task_id, t.title, m.strength
+               FROM topics t
+               JOIN mastery m ON t.id = m.topic_id
+               WHERE t.plan_id = ? AND t.task_id != ? 
+                     AND t.status = 'completed' AND m.strength < 0.7
+               ORDER BY RANDOM() LIMIT 1""",
+            (plan_id, current_task_id)
+        )
+        
+        row = cursor.fetchone()
+        if row:
+            return dict(row)
+        
+        cursor.execute(
+            """SELECT t.id, t.plan_id, t.task_id, t.title, m.strength
+               FROM topics t
+               JOIN mastery m ON t.id = m.topic_id
+               WHERE t.plan_id = ? AND t.task_id != ? AND t.status = 'completed'
+               ORDER BY RANDOM() LIMIT 1""",
+            (plan_id, current_task_id)
+        )
+        
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def record_struggle(self, topic_id: int, reason: str = "quiz_failed") -> None:
+        """Record a struggle event for a topic."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """INSERT OR IGNORE INTO struggles (topic_id, count, last_failed, reasons)
+            VALUES (?, 0, NULL, '[]')""",
+            (topic_id,)
+        )
+        
+        cursor.execute(
+            """SELECT reasons FROM struggles WHERE topic_id = ?""",
+            (topic_id,)
+        )
+        reasons_json = cursor.fetchone()[0]
+        reasons = json.loads(reasons_json) if reasons_json else []
+        reasons.append({"reason": reason, "date": datetime.now().isoformat()})
+        
+        cursor.execute(
+            """UPDATE struggles SET 
+            count = count + 1, 
+            last_failed = ?, 
+            reasons = ?
+            WHERE topic_id = ?""",
+            (datetime.now().strftime("%Y-%m-%d"), json.dumps(reasons), topic_id)
+        )
+        
+        cursor.execute(
+            "UPDATE topics SET status = 'struggling' WHERE id = ?",
+            (topic_id,)
+        )
+        
+        conn.commit()
+        self.export_to_json()
+    
+    def clear_struggle(self, topic_id: int) -> None:
+        """Clear struggle status for a topic."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM struggles WHERE topic_id = ?", (topic_id,))
+        conn.commit()
+        self.export_to_json()
+    
+    def get_struggle_count(self, topic_id: int) -> int:
+        """Get struggle count for a topic."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT count FROM struggles WHERE topic_id = ?",
+            (topic_id,)
+        )
+        result = cursor.fetchone()
+        return result[0] if result else 0
+    
+    def update_mastery(self, topic_id: int, passed: bool, confidence: int = 3) -> None:
+        """Update mastery schedule for spaced repetition."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        today = datetime.now()
+        today_str = today.strftime("%Y-%m-%d")
+        
+        cursor.execute(
+            """INSERT OR IGNORE INTO mastery (topic_id, strength, interval, next_review, last_review)
+            VALUES (?, 0.0, 0, ?, NULL)""",
+            (topic_id, today_str)
+        )
+        
+        if passed and confidence >= 3:
+            cursor.execute(
+                """SELECT strength, interval FROM mastery WHERE topic_id = ?""",
+                (topic_id,)
+            )
+            result = cursor.fetchone()
+            current_strength = result[0]
+            current_interval = result[1]
+            
+            new_strength = min(1.0, current_strength + 0.15)
+            
+            if current_interval in SPACED_REPETITION_INTERVALS:
+                idx = SPACED_REPETITION_INTERVALS.index(current_interval)
+                next_idx = min(idx + 1, len(SPACED_REPETITION_INTERVALS) - 1)
+                new_interval = SPACED_REPETITION_INTERVALS[next_idx]
+            else:
+                new_interval = SPACED_REPETITION_INTERVALS[0]
+            
+            next_review = today + timedelta(days=new_interval)
+            
+            cursor.execute(
+                """UPDATE mastery SET 
+                strength = ?, 
+                interval = ?, 
+                next_review = ?, 
+                last_review = ?
+                WHERE topic_id = ?""",
+                (new_strength, new_interval, next_review.strftime("%Y-%m-%d"), 
+                 today_str, topic_id)
+            )
+        
+        elif not passed:
+            cursor.execute(
+                """UPDATE mastery SET 
+                strength = MAX(0.0, strength - 0.2), 
+                interval = 1, 
+                next_review = ?
+                WHERE topic_id = ?""",
+                ((today + timedelta(days=1)).strftime("%Y-%m-%d"), topic_id)
+            )
+        
+        conn.commit()
+        self.export_to_json()
+    
+    def start_session(self, repo_id: int, plan_id: int) -> int:
+        """Start a new learning session."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        self.update_repo_access(repo_id)
+        
+        cursor.execute(
+            """INSERT INTO sessions (repo_id, plan_id, started_at)
+            VALUES (?, ?, ?)""",
+            (repo_id, plan_id, datetime.now().isoformat())
+        )
+        
+        session_id = cursor.lastrowid
+        conn.commit()
+        return session_id
+    
+    def end_session(self, session_id: int, topics_covered: Optional[List[int]] = None,
+                    confidence_avg: Optional[float] = None) -> None:
+        """End a learning session."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT started_at FROM sessions WHERE id = ?",
+            (session_id,)
+        )
+        started_at = cursor.fetchone()[0]
+        
+        started_dt = datetime.fromisoformat(started_at)
+        duration = int((datetime.now() - started_dt).total_seconds() / 60)
+        
+        topics_json = json.dumps(topics_covered) if topics_covered else None
+        
+        cursor.execute(
+            """UPDATE sessions SET 
+            ended_at = ?, 
+            duration_minutes = ?, 
+            topics_covered = ?, 
+            confidence_avg = ?
+            WHERE id = ?""",
+            (datetime.now().isoformat(), duration, topics_json, confidence_avg, session_id)
+        )
+        
+        conn.commit()
+        self.export_to_json()
+    
+    def record_quiz(self, session_id: int, topic_id: int, quiz_type: str,
+                    passed: bool, confidence_before: Optional[int] = None) -> int:
+        """Record a quiz attempt."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """INSERT INTO quiz_history 
+            (session_id, topic_id, quiz_type, passed, confidence_before)
+            VALUES (?, ?, ?, ?, ?)""",
+            (session_id, topic_id, quiz_type, int(passed), confidence_before)
+        )
+        
+        quiz_id = cursor.lastrowid
+        
+        if confidence_before:
+            gap_detected = 1 if confidence_before >= 4 and not passed else 0
+            cursor.execute(
+                """INSERT INTO confidence_ratings 
+                (topic_id, rating, passed, gap_detected)
+                VALUES (?, ?, ?, ?)""",
+                (topic_id, confidence_before, int(passed), gap_detected)
+            )
+        
+        conn.commit()
+        self.export_to_json()
+        return quiz_id
+    
+    def mark_topic_completed(self, topic_id: int) -> None:
+        """Mark topic as completed (passed quiz)."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "UPDATE topics SET status = 'completed' WHERE id = ?",
+            (topic_id,)
+        )
+        
+        cursor.execute("DELETE FROM struggles WHERE topic_id = ?", (topic_id,))
+        
+        conn.commit()
+        self.export_to_json()
+    
+    def get_progress_summary(self, plan_id: int) -> Dict:
+        """Generate progress summary for a plan."""
+        conn = self._get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT COUNT(*) as total FROM topics WHERE plan_id = ?",
+            (plan_id,)
+        )
+        total_topics = cursor.fetchone()["total"]
+        
+        cursor.execute(
+            "SELECT COUNT(*) as count FROM topics WHERE plan_id = ? AND status = 'completed'",
+            (plan_id,)
+        )
+        completed_count = cursor.fetchone()["count"]
+        
+        cursor.execute(
+            "SELECT COUNT(*) as count FROM topics WHERE plan_id = ? AND status = 'struggling'",
+            (plan_id,)
+        )
+        struggling_count = cursor.fetchone()["count"]
+        
+        cursor.execute(
+            """SELECT COUNT(*) as count FROM mastery m
+            JOIN topics t ON m.topic_id = t.id
+            WHERE t.plan_id = ? AND m.next_review <= ?""",
+            (plan_id, datetime.now().strftime("%Y-%m-%d"))
+        )
+        due_reviews = cursor.fetchone()["count"]
+        
+        cursor.execute(
+            """SELECT AVG(strength) as avg FROM mastery m
+            JOIN topics t ON m.topic_id = t.id
+            WHERE t.plan_id = ?""",
+            (plan_id,)
+        )
+        avg_strength = cursor.fetchone()["avg"] or 0.0
+        
+        cursor.execute(
+            """SELECT COUNT(*) as count FROM confidence_ratings cr
+            JOIN topics t ON cr.topic_id = t.id
+            WHERE t.plan_id = ? AND cr.gap_detected = 1""",
+            (plan_id,)
+        )
+        confidence_gaps = cursor.fetchone()["count"]
+        
+        cursor.execute(
+            """SELECT COUNT(*) as count, SUM(duration_minutes) as total_minutes
+            FROM sessions WHERE plan_id = ?""",
+            (plan_id,)
+        )
+        session_stats = cursor.fetchone()
+        session_count = session_stats["count"]
+        total_minutes = session_stats["total_minutes"] or 0
+        
+        return {
+            "plan_id": plan_id,
+            "total_topics": total_topics,
+            "completed_count": completed_count,
+            "completion_percent": round(completed_count / total_topics * 100, 1) if total_topics > 0 else 0,
+            "struggling_count": struggling_count,
+            "due_reviews": due_reviews,
+            "avg_mastery_strength": round(avg_strength, 2),
+            "confidence_gaps": confidence_gaps,
+            "session_count": session_count,
+            "total_minutes": total_minutes,
+        }
+    
+    def get_streak(self, repo_id: int) -> int:
+        """Calculate consecutive days streak."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """SELECT DATE(started_at) as day FROM sessions 
+            WHERE repo_id = ? ORDER BY started_at DESC""",
+            (repo_id,)
+        )
+        days = [row[0] for row in cursor.fetchall()]
+        
+        if not days:
+            return 0
+        
+        streak = 0
+        today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        unique_days = sorted(set(days), reverse=True)
+        
+        if unique_days[0] == today or unique_days[0] == yesterday:
+            streak = 1
+            for i in range(1, len(unique_days)):
+                prev_date = datetime.strptime(unique_days[i-1], "%Y-%m-%d")
+                curr_date = datetime.strptime(unique_days[i], "%Y-%m-%d")
+                if (prev_date - curr_date).days == 1:
+                    streak += 1
+                else:
+                    break
+        
+        return streak
+    
+    def get_topic_type(self, topic_id: int) -> str:
+        """Determine topic type: new, review, or struggling."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT status FROM topics WHERE id = ?", (topic_id,))
+        result = cursor.fetchone()
+        status = result[0] if result else "new"
+        
+        if status == "struggling":
+            return "struggling"
+        
+        if status == "completed":
+            return "review"
+        
+        return "new"
+    
+    def reset_progress(self, repo_id: Optional[int] = None, plan_id: Optional[int] = None) -> None:
+        """Reset progress for a repo or plan."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        if plan_id:
+            cursor.execute("UPDATE topics SET status = 'new' WHERE plan_id = ?", (plan_id,))
+            cursor.execute(
+                """DELETE FROM mastery WHERE topic_id IN 
+                (SELECT id FROM topics WHERE plan_id = ?)""",
+                (plan_id,)
+            )
+            cursor.execute(
+                """DELETE FROM struggles WHERE topic_id IN 
+                (SELECT id FROM topics WHERE plan_id = ?)""",
+                (plan_id,)
+            )
+            cursor.execute(
+                """DELETE FROM quiz_history WHERE topic_id IN 
+                (SELECT id FROM topics WHERE plan_id = ?)""",
+                (plan_id,)
+            )
+            cursor.execute(
+                """DELETE FROM confidence_ratings WHERE topic_id IN 
+                (SELECT id FROM topics WHERE plan_id = ?)""",
+                (plan_id,)
+            )
+        elif repo_id:
+            cursor.execute(
+                """DELETE FROM mastery WHERE topic_id IN 
+                (SELECT t.id FROM topics t JOIN learning_plans lp ON t.plan_id = lp.id 
+                WHERE lp.repo_id = ?)""",
+                (repo_id,)
+            )
+            cursor.execute(
+                """DELETE FROM struggles WHERE topic_id IN 
+                (SELECT t.id FROM topics t JOIN learning_plans lp ON t.plan_id = lp.id 
+                WHERE lp.repo_id = ?)""",
+                (repo_id,)
+            )
+            cursor.execute(
+                """UPDATE topics SET status = 'new' WHERE plan_id IN 
+                (SELECT id FROM learning_plans WHERE repo_id = ?)""",
+                (repo_id,)
+            )
+        
+        conn.commit()
+        self.export_to_json()
+    
+    def delete_repo(self, repo_id: int) -> None:
+        """Delete a repo and all its data."""
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
+        conn.commit()
+        self.export_to_json()
 
 
-def get_due_reviews(progress: dict) -> list:
-    """Get tasks due for spaced repetition review"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    
-    due = []
-    for task_id, mastery in progress.get("masterySchedule", {}).items():
-        if mastery["nextReview"] <= today:
-            due.append(task_id)
-    
-    return due
+_progress_manager_instance: Optional[ProgressManager] = None
 
 
-def get_high_struggle_tasks(progress: dict) -> list:
-    """Get tasks with high struggle count (>= 3)"""
-    high = []
-    for task_id, struggle in progress.get("strugglingTasks", {}).items():
-        if struggle["count"] >= 3:
-            high.append(task_id)
-    
-    return high
-
-
-def get_medium_struggle_tasks(progress: dict) -> list:
-    """Get tasks with medium struggle count (>= 2)"""
-    medium = []
-    for task_id, struggle in progress.get("strugglingTasks", {}).items():
-        if struggle["count"] >= 2:
-            medium.append(task_id)
-    
-    return medium
-
-
-def record_confidence_rating(progress: dict, task_id: str, rating: int, passed: bool) -> dict:
-    """Record confidence rating with quiz outcome"""
-    if task_id not in progress.get("confidenceRatings", {}):
-        progress["confidenceRatings"][task_id] = []
-    
-    entry = {
-        "rating": rating,
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "passed": passed,
-        "gap": rating >= 4 and not passed
-    }
-    
-    progress["confidenceRatings"][task_id].append(entry)
-    
-    return progress
-
-
-def record_quiz_attempt(progress: dict, task_id: str, quiz_type: str, passed: bool, confidence: int) -> dict:
-    """Record quiz attempt in history"""
-    entry = {
-        "taskId": task_id,
-        "type": quiz_type,
-        "passed": passed,
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "confidenceBefore": confidence
-    }
-    
-    progress["quizHistory"].append(entry)
-    
-    if task_id not in progress.get("attemptLog", {}):
-        progress["attemptLog"][task_id] = []
-    
-    progress["attemptLog"][task_id].append({
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "type": quiz_type,
-        "outcome": "passed" if passed else "failed"
-    })
-    
-    return progress
-
-
-def get_next_task(progress: dict, plan_tasks: list) -> Optional[str]:
-    """Determine next task based on priority algorithm"""
-    high_struggle = get_high_struggle_tasks(progress)
-    due_reviews = get_due_reviews(progress)
-    
-    if high_struggle:
-        return high_struggle[0]
-    
-    if due_reviews:
-        return due_reviews[0]
-    
-    completed = set(progress.get("completedTasks", []))
-    for task in plan_tasks:
-        if task not in completed:
-            return task
-    
-    return None
-
-
-def get_progress_summary(progress: dict) -> dict:
-    """Generate progress summary stats"""
-    struggle_count = len(progress.get("strugglingTasks", {}))
-    due_reviews = len(get_due_reviews(progress))
-    high_struggle = len(get_high_struggle_tasks(progress))
-    taught_count = len(progress.get("taughtTasks", []))
-    
-    avg_mastery = 0
-    if progress.get("masterySchedule"):
-        strengths = [m["strength"] for m in progress["masterySchedule"].values()]
-        avg_mastery = sum(strengths) / len(strengths)
-    
-    confidence_gaps = 0
-    for ratings in progress.get("confidenceRatings", {}).values():
-        for r in ratings:
-            if r.get("gap"):
-                confidence_gaps += 1
-    
-    return {
-        "track": progress.get("currentTrack", "backend"),
-        "level": progress.get("currentLevel", 0),
-        "phase": progress.get("currentPhase", 1),
-        "completed_count": len(progress.get("completedTasks", [])),
-        "taught_count": taught_count,
-        "struggle_count": struggle_count,
-        "high_struggle_count": high_struggle,
-        "due_reviews": due_reviews,
-        "avg_mastery": round(avg_mastery, 2),
-        "confidence_gaps": confidence_gaps,
-        "session_count": progress.get("sessionCount", 0),
-        "total_minutes": progress.get("totalMinutesLearned", 0),
-        "streak": progress.get("consecutiveDays", 0),
-        "current_task_type": get_task_type(progress, progress.get("currentTaskId", "")) if progress.get("currentTaskId") else None
-    }
-
-
-def reset_progress() -> dict:
-    """Reset all progress to defaults"""
-    progress = DEFAULT_PROGRESS.copy()
-    save_progress(progress)
-    return progress
-
-
-def get_interleaved_topic(progress: dict, current_task_id: str, plan_tasks: list) -> Optional[str]:
-    """Select an interleaved topic (random previous concept)"""
-    completed = progress.get("completedTasks", [])
-    mastered = list(progress.get("masterySchedule", {}).keys())
-    
-    candidates = [t for t in completed + mastered 
-                  if t != current_task_id and t in plan_tasks]
-    
-    if not candidates:
-        return None
-    
-    weak_mastery = []
-    for t in candidates:
-        mastery = progress.get("masterySchedule", {}).get(t, {})
-        if mastery.get("strength", 0) < 0.7:
-            weak_mastery.append(t)
-    
-    if weak_mastery:
-        import random
-        return random.choice(weak_mastery)
-    
-    import random
-    return random.choice(candidates)
+def get_progress_manager(skill_dir: Optional[Path] = None) -> ProgressManager:
+    """Get singleton ProgressManager instance."""
+    global _progress_manager_instance
+    if _progress_manager_instance is None:
+        _progress_manager_instance = ProgressManager(skill_dir)
+    return _progress_manager_instance
 
 
 if __name__ == "__main__":
-    print("Progress Manager - Adaptive Learning Coach")
-    print("=" * 40)
+    print("Progress Manager Test")
+    print("=" * 50)
     
-    progress = load_progress()
-    summary = get_progress_summary(progress)
+    pm = ProgressManager()
     
-    print(f"Track: {summary['track']}")
-    print(f"Level: {summary['level']}")
-    print(f"Phase: {summary['phase']}")
-    print(f"Completed: {summary['completed_count']} tasks")
-    print(f"Taught: {summary['taught_count']} topics")
-    print(f"Struggling: {summary['struggle_count']} tasks")
-    print(f"Due reviews: {summary['due_reviews']}")
-    print(f"Average mastery: {summary['avg_mastery']}")
-    print(f"Streak: {summary['streak']} days")
-    print(f"Sessions: {summary['session_count']}")
+    repo_id = pm.register_repo("/test/project", "test-project", "existing", "python")
+    print(f"Registered repo: {repo_id}")
     
-    if summary['current_task_type']:
-        print(f"Current task type: {summary['current_task_type']}")
+    plan_id = pm.create_learning_plan(
+        repo_id, "Test Plan", "new_topic",
+        experience_level="intermediate",
+        timeline="2_weeks",
+        goals=["Learn basics", "Build something"]
+    )
+    print(f"Created plan: {plan_id}")
+    
+    pm.add_topic(plan_id, "1.1", "Introduction", "Get started", "foundation", 0, 10)
+    pm.add_topic(plan_id, "1.2", "Core Concepts", "Understand core", "core", 1, 20)
+    pm.add_topic(plan_id, "2.1", "Advanced", "Deep dive", "advanced", 2, 30)
+    print("Added 3 topics")
+    
+    session_id = pm.start_session(repo_id, plan_id)
+    print(f"Started session: {session_id}")
+    
+    summary = pm.get_progress_summary(plan_id)
+    print(f"\nProgress summary:")
+    for key, value in summary.items():
+        print(f"  {key}: {value}")
+    
+    export = pm.export_to_json()
+    print(f"\nExported to JSON: {len(export['repos'])} repos, {len(export['topics'])} topics")
+    
+    print("\nAll tests passed!")
