@@ -201,11 +201,53 @@ Phase 4: Practice ([N] topics)
   ...
 
 Total estimated: [X] hours
+```
 
-Ready to start? (first task will be presented)
-  • "start" - Begin learning
-  • "adjust plan" - Modify structure
+**Step 6: Write Plan & Initialize Tracking (REQUIRED)**
+
+```
+📝 Save Plan & Initialize Tracking
+───────────────────────────────────
+
+Tracking initialized in database:
+  • Repo registered: [repo_name] (id: [repo_id])
+  • Plan created: "[plan_name]" (id: [plan_id])
+  • Topics added: [N] learning tasks
+  • Database: storage/learning.db
+
+⚠️ You must save the plan before starting learning.
+
+Write plan to file:
+  • "write plan" - Save as .agents/LEARNING_PLAN.md (Recommended)
+  • "custom path" - Specify different location
+
+Options after saving:
+  • "start" - Begin first task
+  • "adjust plan" - Modify structure before saving
   • "show timeline" - See detailed schedule
+```
+
+**Plan File Format (LEARNING_PLAN.md):**
+
+The skill writes a markdown file containing:
+- Plan metadata (topic, level, timeline, goals)
+- All phases and topics with task IDs
+- Estimated time per topic
+- Instructions for using the skill
+
+**Enforcement Rule:**
+
+The skill MUST NOT proceed to learning mode until:
+1. Plan is written to a file (user confirms location)
+2. Tracking is verified (repo, plan, topics in database)
+
+If user says "start" before saving:
+```
+⚠️ Please save the plan first.
+
+Run: "write plan" to save to .agents/LEARNING_PLAN.md
+
+This ensures you have a reference and tracking is confirmed.
 ```
 
 ---
